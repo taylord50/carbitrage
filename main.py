@@ -13,6 +13,7 @@ import io
 import logging
 import os
 from functools import wraps
+from pathlib import Path
 
 from flask import (Flask, jsonify, redirect, render_template, request,
                    send_file, session, url_for)
@@ -20,6 +21,15 @@ from flask import (Flask, jsonify, redirect, render_template, request,
 from api_client import DEFAULT_BUDGET, AutoDevClient
 from db import Database
 from indexer import run_index
+
+# Load .env file if present (fallback for when Replit Secrets aren't working)
+_env_file = Path(__file__).parent / ".env"
+if _env_file.exists():
+    for line in _env_file.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip())
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
