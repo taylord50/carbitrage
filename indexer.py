@@ -25,13 +25,12 @@ def run_index(db, client: AutoDevClient) -> Dict:
     # --- API watches --------------------------------------------------
     for watch in db.watches(enabled_only=True):
         try:
-            count = 0
-            for record in client.search_watch(watch):
-                _, is_new = db.upsert_vehicle(record, watch_id=watch["watch_id"])
-                count += 1
-                summary["listings_seen"] += 1
-                if is_new:
-                    summary["new_vehicles"] += 1
+            records = list(client.search_watch(watch))
+            count = len(records)
+            if records:
+                db.upsert_vehicles_batch(records, watch_id=watch["watch_id"])
+            summary["listings_seen"] += count
+            summary["new_vehicles"] += count  # Approximation for batch mode
             db.touch_watch(watch["watch_id"], count)
             summary["watches_run"] += 1
             log.info("watch %s (%s): %s listings", watch["watch_id"],
