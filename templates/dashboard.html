@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Carbitrage</title>
+<style>
+  :root { --bg:#101318; --panel:#181d24; --panel2:#20262f; --line:#2b333e;
+          --text:#e8edf3; --muted:#94a2b3; --accent:#53a8ff; --good:#3ddc97;
+          --warn:#ffb454; --bad:#ff6b6b; --gold:#e6c15a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:14px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif; }
+  header { display:flex; justify-content:space-between; align-items:center;
+           padding:16px 22px; background:var(--panel);
+           border-bottom:1px solid var(--line); }
+  h1 { margin:0; font-size:19px; }
+  .wrap { padding:18px 22px 60px; }
+  .cardrow { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:18px; }
+  .card { background:var(--panel); border:1px solid var(--line);
+          border-radius:10px; padding:14px 16px; flex:1; min-width:280px; }
+  .card h2 { margin:0 0 9px; font-size:13px; text-transform:uppercase;
+             letter-spacing:.05em; color:var(--muted); }
+  /* gas gauge */
+  .gauge-bar { height:14px; background:var(--panel2); border-radius:7px;
+               overflow:hidden; border:1px solid var(--line); }
+  .gauge-fill { height:100%; background:var(--good); transition:width .3s; }
+  .gauge-fill.warn { background:var(--warn); }
+  .gauge-fill.bad { background:var(--bad); }
+  .gauge-text { font-size:12.5px; color:var(--muted); margin-top:6px; }
+  .big { font-size:22px; font-weight:650; }
+  form.inline { display:inline; }
+  input, select { background:var(--panel2); color:var(--text);
+    border:1px solid var(--line); border-radius:6px; padding:6px 8px;
+    font-size:13px; }
+  input.short { width:80px; } input.med { width:130px; }
+  button { background:var(--accent); color:#08131f; border:none;
+    border-radius:6px; padding:7px 13px; cursor:pointer; font-size:13px;
+    font-weight:600; }
+  button.ghost { background:var(--panel2); color:var(--text);
+    border:1px solid var(--line); font-weight:400; }
+  button.danger { background:transparent; color:var(--bad);
+    border:1px solid var(--bad); }
+  table { width:100%; border-collapse:collapse; background:var(--panel);
+          border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  th, td { padding:8px 10px; border-bottom:1px solid var(--line);
+           text-align:left; font-size:12.5px; }
+  th { background:var(--panel2); color:var(--muted); font-size:11px;
+       text-transform:uppercase; letter-spacing:.04em; }
+  .num { text-align:right; font-variant-numeric:tabular-nums; }
+  .star { cursor:pointer; font-size:17px; color:var(--muted);
+          background:none; border:none; padding:0 4px; }
+  .star.on { color:var(--gold); }
+  .tabs { display:flex; gap:7px; margin-bottom:13px; }
+  .tabs a { background:var(--panel2); color:var(--muted); padding:7px 14px;
+    border-radius:999px; text-decoration:none; font-size:13px;
+    border:1px solid var(--line); }
+  .tabs a.on { background:var(--accent); color:#08131f; font-weight:600; }
+  a { color:var(--accent); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  .tag { display:inline-block; font-size:10.5px; padding:1px 6px;
+    border-radius:4px; border:1px solid var(--line); color:var(--muted); }
+  .tag.bad { border-color:var(--bad); color:var(--bad); }
+  .tag.good { border-color:var(--good); color:var(--good); }
+  .muted { color:var(--muted); font-size:12px; }
+  details summary { cursor:pointer; color:var(--accent); font-size:13px;
+                    margin-bottom:8px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr));
+          gap:8px; margin:10px 0; }
+  .warnbox { border:1px solid var(--warn); border-radius:8px; padding:10px 13px;
+             color:var(--warn); font-size:13px; margin-bottom:14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Carbitrage <span class="muted">luxury market tracker</span></h1>
+  <div>
+    <form class="inline" method="post" action="/run">
+      <button {% if gauge.exhausted %}disabled title="Budget exhausted"{% endif %}>
+        Run index now</button>
+    </form>
+    <a href="/export.csv?view={{ view }}"><button class="ghost" type="button">
+      Download CSV</button></a>
+  </div>
+</header>
+
+<div class="wrap">
+
+  {% if not key_set %}
+  <div class="warnbox">
+    No API key configured. Add <b>AUTODEV_API_KEY</b> in Replit Secrets
+    (padlock icon, left sidebar). Get a free key at auto.dev/pricing —
+    1,000 calls/month at $0. Manual URL tracking works without it.
+  </div>
+  {% endif %}
+
+  <div style="border:1px solid var(--accent); border-radius:8px; padding:10px 13px;
+              color:var(--accent); font-size:13px; margin-bottom:14px; opacity:0.85">
+    &#x1F527; <b>Coming soon:</b> Porsche Finder + Mercedes CPO scrapers for
+    complete coverage verification. The Auto.dev API covers ~90% of franchise
+    inventory; these scrapers will catch the rest.
+  </div>
+
+  <div class="cardrow">
+    <!-- API gas gauge -->
+    <div class="card">
+      <h2>API budget (never pay)</h2>
+      <div class="big">{{ gauge.used }} / {{ gauge.budget }}</div>
+      <div class="gauge-bar">
+        <div class="gauge-fill {% if gauge.pct > 85 %}bad{% elif gauge.pct > 60 %}warn{% endif %}"
+             style="width: {{ gauge.pct }}%"></div>
+      </div>
+      <div class="gauge-text">
+        {{ gauge.remaining }} calls left, {{ gauge.days_left }} days in month
+        &rarr; budget ~{{ gauge.daily_allowance }}/day.
+        {% if gauge.exhausted %}<b style="color:var(--bad)">EXHAUSTED — calls
+        stop until next month. You will not be charged.</b>{% endif %}
+      </div>
+    </div>
+
+    <!-- Watches -->
+    <div class="card" style="flex:2">
+      <h2>Watches ({{ watches|length }})</h2>
+      {% for w in watches %}
+      <div style="display:flex; justify-content:space-between; align-items:center;
+                  padding:4px 0; border-bottom:1px solid var(--line)">
+        <span>
+          {% if not w.enabled %}<span class="tag">paused</span>{% endif %}
+          <b>{{ w.label }}</b>
+          <span class="muted">
+            {{ w.make }} {{ w.model }}
+            {% if w.trim_contains %}<em>(trim: {{ w.trim_contains }})</em>{% endif %}
+            {% if w.year_min %}{{ w.year_min }}+{% endif %}
+            {% if w.price_max %}&le; ${{ "{:,}".format(w.price_max) }}{% endif %}
+            {% if w.radius %}{{ w.radius }}mi of {{ w.zip_code }}{% else %}nationwide{% endif %}
+            {% if w.last_count is not none %}&middot; {{ w.last_count }} found{% endif %}
+          </span>
+        </span>
+        <span>
+          <form class="inline" method="post" action="/watch/{{ w.watch_id }}/toggle">
+            <button class="ghost">{{ 'Resume' if not w.enabled else 'Pause' }}</button>
+          </form>
+          <form class="inline" method="post" action="/watch/{{ w.watch_id }}/delete"
+                onsubmit="return confirm('Delete this watch? Vehicles stay in the database.')">
+            <button class="danger">x</button>
+          </form>
+        </span>
+      </div>
+      {% endfor %}
+
+      <details {% if not watches %}open{% endif %}>
+        <summary>+ Add watch</summary>
+        <form method="post" action="/watch/add" id="watchForm">
+          <div class="grid">
+            <input name="label" placeholder="Label (optional)">
+            <input name="make" placeholder="Make *" required id="wf_make">
+            <input name="model" placeholder="Model" id="wf_model">
+            <input name="trim_contains" placeholder="Trim contains" id="wf_trim"
+                   title="Client-side filter: only keep results whose trim field contains this text">
+            <input name="year_min" class="short" placeholder="Year min" id="wf_ymin">
+            <input name="year_max" class="short" placeholder="Year max" id="wf_ymax">
+            <input name="price_min" class="med" placeholder="Price min $" id="wf_pmin">
+            <input name="price_max" class="med" placeholder="Price max $" id="wf_pmax">
+            <input name="mileage_max" class="med" placeholder="Miles max" id="wf_mmax">
+            <input name="zip_code" class="short" placeholder="ZIP" id="wf_zip">
+            <input name="radius" class="short" placeholder="Radius mi" id="wf_rad">
+          </div>
+          <button>Add watch</button>
+          <button type="button" class="ghost" onclick="testWatch()"
+                  {% if gauge.exhausted %}disabled{% endif %}>Test (1 call)</button>
+          <span class="muted">Leave ZIP/radius empty for nationwide.
+            Each watch costs ~1-3 API calls per run.
+            Trim filter is applied client-side after API results return.</span>
+        </form>
+        <div id="testResult" style="margin-top:8px;display:none" class="muted"></div>
+      </details>
+
+      {% if not watches %}
+      <div style="margin-top:12px">
+        <form method="post" action="/seed" class="inline">
+          <button class="ghost">Load recommended luxury EV watches</button>
+        </form>
+        <span class="muted">Taycan, Macan Electric, EQS, EQE, EQB, Lucid Air, i7, e-tron GT</span>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Manual URLs -->
+  <div class="card" style="margin-bottom:18px">
+    <h2>Manually tracked URLs ({{ manuals|length }})
+      <span class="muted" style="text-transform:none">— for cars the API does not
+      carry: broker pages, BaT, private sales. Checked on every run, no API cost.</span>
+    </h2>
+    {% for m in manuals %}
+    <div style="display:flex; justify-content:space-between; padding:3px 0;
+                border-bottom:1px solid var(--line)">
+      <span>
+        {% if m.last_status == 'gone' %}<span class="tag bad">gone</span>
+        {% elif m.last_status == 'error' %}<span class="tag bad">error</span>
+        {% elif m.last_status == 'ok' %}<span class="tag good">ok</span>
+        {% else %}<span class="tag">new</span>{% endif %}
+        <b>{{ m.label or '(no label)' }}</b>
+        <a href="{{ m.url }}" target="_blank" rel="noopener">{{ m.url[:70] }}</a>
+        {% if m.vin %}<span class="muted">VIN {{ m.vin }}</span>{% endif %}
+      </span>
+      <form class="inline" method="post" action="/manual/{{ m.manual_id }}/delete">
+        <button class="danger">x</button>
+      </form>
+    </div>
+    {% endfor %}
+    <details {% if not manuals %}open{% endif %}>
+      <summary>+ Track a URL</summary>
+      <form method="post" action="/manual/add">
+        <input name="url" style="width:45%" placeholder="https://... *" required>
+        <input name="label" class="med" placeholder="Label e.g. 2021 Cullinan">
+        <input name="vin" class="med" placeholder="VIN (optional)">
+        <button>Track</button>
+      </form>
+    </details>
+  </div>
+
+  <!-- Vehicle table -->
+  <div class="tabs">
+    <a href="/?view=active" class="{{ 'on' if view == 'active' }}">Active market</a>
+    <a href="/?view=starred" class="{{ 'on' if view == 'starred' }}">&#9733; Flagged</a>
+    <a href="/?view=sold" class="{{ 'on' if view == 'sold' }}">Sold / delisted</a>
+  </div>
+
+  <table>
+    <thead><tr>
+      <th></th><th>Vehicle</th><th class="num">Price</th>
+      <th class="num">First seen at</th><th class="num">Drop</th>
+      <th class="num">Miles</th><th class="num">Days</th>
+      <th>Location</th><th>Dealer</th>
+      {% if view == 'sold' %}<th>Delisted</th>{% endif %}
+    </tr></thead>
+    <tbody>
+    {% for v in vehicles %}
+      {% set keys = v.keys() %}
+      <tr>
+        <td>
+          <button class="star {{ 'on' if v.starred }}"
+                  onclick="toggleStar(this, {{ v.vehicle_id }})"
+                  title="Flag this vehicle">&#9733;</button>
+        </td>
+        <td>
+          {% if v.listing_url %}<a href="{{ v.listing_url }}" target="_blank"
+             rel="noopener">{% endif %}
+          {{ v.year or '?' }} {{ v.make }} {{ v.model }} {{ v.trim or '' }}
+          {% if v.listing_url %}</a>{% endif %}
+          {% if v.source == 'manual' %}<span class="tag">manual</span>{% endif %}
+          {% if v.vin %}<div class="muted">{{ v.vin }}</div>{% endif %}
+        </td>
+        <td class="num">
+          {% if view == 'sold' and 'last_price' in keys and v.last_price %}
+            ${{ "{:,}".format(v.last_price) }}
+          {% elif v.price %}${{ "{:,}".format(v.price) }}
+          {% elif v.accepting_offers %}<span class="tag">offers</span>
+          {% else %}&mdash;{% endif %}
+        </td>
+        <td class="num muted">
+          {% if 'first_price' in keys and v.first_price %}
+            ${{ "{:,}".format(v.first_price) }}{% else %}&mdash;{% endif %}
+        </td>
+        <td class="num">
+          {% if 'first_price' in keys and v.first_price and v.price
+                and v.first_price > v.price %}
+            <span style="color:var(--good)">
+              -${{ "{:,}".format(v.first_price - v.price) }}</span>
+          {% else %}&mdash;{% endif %}
+        </td>
+        <td class="num">{{ "{:,}".format(v.mileage) if v.mileage else '?' }}</td>
+        <td class="num">{{ v.days_tracked if 'days_tracked' in keys else '?' }}</td>
+        <td>{{ v.city or '' }}{% if v.state %}, {{ v.state }}{% endif %}</td>
+        <td class="muted">{{ (v.dealer_name or '')[:26] }}</td>
+        {% if view == 'sold' %}<td class="muted">{{ v.sold_detected }}</td>{% endif %}
+      </tr>
+    {% else %}
+      <tr><td colspan="10" style="text-align:center; padding:26px"
+              class="muted">
+        Nothing here yet. Add a watch above, then click "Run index now".
+      </td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+function toggleStar(el, vehicleId) {
+  const turningOn = !el.classList.contains('on');
+  fetch('/vehicle/' + vehicleId + '/star', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: 'starred=' + (turningOn ? '1' : '0'),
+  }).then(r => r.json()).then(() => {
+    el.classList.toggle('on', turningOn);
+  });
+}
+
+function testWatch() {
+  const form = document.getElementById('watchForm');
+  const data = new FormData(form);
+  const result = document.getElementById('testResult');
+  result.style.display = 'block';
+  result.innerHTML = 'Testing...';
+
+  fetch('/watch/test', { method: 'POST', body: data })
+    .then(r => r.json())
+    .then(d => {
+      if (!d.ok) {
+        result.innerHTML = '<span style="color:var(--bad)">' + d.error + '</span>';
+        return;
+      }
+      let html = '<span style="color:var(--good)">&#10003; Found ~' + d.count + ' listings.</span>';
+      if (d.note) html += ' <span class="muted">' + d.note + '</span>';
+      if (d.sample && d.sample.length) {
+        html += '<br>Sample: ';
+        d.sample.forEach(s => {
+          html += (s.year||'?') + ' ' + (s.make||'') + ' ' + (s.model||'') + ' ' + (s.trim||'');
+          if (s.price) html += ' $' + s.price.toLocaleString();
+          html += ' &middot; ';
+        });
+      }
+      result.innerHTML = html;
+    })
+    .catch(e => {
+      result.innerHTML = '<span style="color:var(--bad)">Error: ' + e + '</span>';
+    });
+}
+</script>
+</body>
+</html>

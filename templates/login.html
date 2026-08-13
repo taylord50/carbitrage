@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Carbitrage login</title>
+<style>
+  body { background:#101318; color:#e8edf3; font:15px -apple-system,
+         "Segoe UI",Roboto,sans-serif; display:flex; justify-content:center;
+         padding-top:120px; }
+  .box { background:#181d24; border:1px solid #2b333e; border-radius:12px;
+         padding:28px 34px; }
+  input { background:#20262f; color:#e8edf3; border:1px solid #2b333e;
+          border-radius:6px; padding:8px 10px; font-size:14px; }
+  button { background:#53a8ff; color:#08131f; border:none; border-radius:6px;
+           padding:8px 16px; font-weight:600; cursor:pointer; margin-left:6px; }
+  .err { color:#ff6b6b; }
+</style>
+</head>
+<body>
+<div class="box">
+  <h2>Carbitrage</h2>
+  {% if error %}<p class="err">{{ error }}</p>{% endif %}
+  <form method="post">
+    <input type="password" name="password" placeholder="Password" autofocus>
+    <button>Enter</button>
+  </form>
+</div>
+</body>
+</html>

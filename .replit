@@ -1,0 +1,9 @@
+run = "python main.py"
+entrypoint = "main.py"
+
+[env]
+PYTHONUNBUFFERED = "1"
+
+[deployment]
+run = ["python", "main.py"]
+deploymentTarget = "cloudrun"

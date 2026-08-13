@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Index run complete</title>
+<meta http-equiv="refresh" content="6;url=/">
+<style>
+  body { background:#101318; color:#e8edf3; font:15px/1.7 -apple-system,
+         "Segoe UI",Roboto,sans-serif; display:flex; justify-content:center;
+         padding-top:80px; }
+  .box { background:#181d24; border:1px solid #2b333e; border-radius:12px;
+         padding:26px 34px; min-width:380px; }
+  h1 { font-size:18px; margin:0 0 14px; }
+  td { padding:3px 14px 3px 0; }
+  .warn { color:#ffb454; } a { color:#53a8ff; }
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>Index run complete</h1>
+  <table>
+    <tr><td>Watches run</td><td><b>{{ summary.watches_run }}</b></td></tr>
+    <tr><td>Listings seen</td><td><b>{{ summary.listings_seen }}</b></td></tr>
+    <tr><td>New vehicles</td><td><b>{{ summary.new_vehicles }}</b></td></tr>
+    <tr><td>Manual URLs checked</td><td><b>{{ summary.manual_checked }}</b></td></tr>
+    <tr><td>Manual listings gone</td><td><b>{{ summary.manual_gone }}</b></td></tr>
+    <tr><td>Marked sold/delisted</td><td><b>{{ summary.marked_sold }}</b></td></tr>
+  </table>
+  {% if summary.budget_hit %}
+    <p class="warn">Monthly API budget reached mid-run. Remaining watches were
+    skipped. They will resume automatically next month. You will not be charged.</p>
+  {% endif %}
+  {% for e in summary.errors %}
+    <p class="warn">{{ e }}</p>
+  {% endfor %}
+  <p><a href="/">Back to dashboard</a> (auto-redirects in a few seconds)</p>
+</div>
+</body>
+</html>
