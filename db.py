@@ -96,7 +96,7 @@ SCHEMA_STATEMENTS = [
         month TEXT PRIMARY KEY,
         calls INTEGER DEFAULT 0
     )""",
-    "CREATE INDEX IF NOT EXISTS idx_vehicles_vin ON vehicles(vin)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_vehicles_user_vin ON vehicles(user_id, vin)",
     "CREATE INDEX IF NOT EXISTS idx_vehicles_active ON vehicles(is_active)",
     "CREATE INDEX IF NOT EXISTS idx_vehicles_user ON vehicles(user_id)",
     "CREATE INDEX IF NOT EXISTS idx_history_date ON price_history(snapshot_date)",
@@ -391,11 +391,12 @@ class Database:
             accepting = 1 if record.get("accepting_offers") else 0
 
             stmts.append({
-                "sql": "INSERT OR IGNORE INTO vehicles "
+                "sql": "INSERT INTO vehicles "
                        "(user_id, vin, year, make, model, trim, mileage, price, "
                        "accepting_offers, dealer_name, city, state, listing_url, "
                        "source, watch_id, first_seen, last_seen) "
-                       "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                       "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                       "ON CONFLICT(user_id, vin) DO NOTHING",
                 "args": [_val(v) for v in [
                     user_id, vin, record.get("year"), record.get("make"),
                     record.get("model"), record.get("trim"),
