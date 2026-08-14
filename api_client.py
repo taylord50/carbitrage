@@ -24,9 +24,6 @@ ENV_KEY = "AUTODEV_API_KEY"
 #: Stop at 950, not 1,000, leaving margin for retries and manual testing.
 DEFAULT_BUDGET = 950
 
-#: Fallback key when environment variable is not set.
-_FALLBACK_KEY = "sk_ad_aA54odcVdldh0xRsjWwyGJJ9"
-
 
 class BudgetExhausted(RuntimeError):
     """Raised when the monthly call budget is used up."""
@@ -36,7 +33,7 @@ class AutoDevClient:
     def __init__(self, db, api_key: Optional[str] = None,
                  budget: int = DEFAULT_BUDGET):
         self.db = db
-        self.api_key = (api_key or os.environ.get(ENV_KEY, "") or _FALLBACK_KEY).strip()
+        self.api_key = (api_key or os.environ.get(ENV_KEY, "")).strip()
         self.budget = budget
 
     @property

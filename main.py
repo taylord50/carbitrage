@@ -70,7 +70,7 @@ def dashboard():
     watches = db.watches(user_id=user_id)
     manuals = db.manual_urls(user_id=user_id)
     users = db.get_users()
-    key_set = True  # Always true now (hardcoded fallback)
+    key_set = bool(os.environ.get("AUTODEV_API_KEY", "").strip())
 
     db.close()
     return render_template(

@@ -14,14 +14,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests as http_requests
 
 # --- Turso connection config ---
-TURSO_URL = os.environ.get(
-    "TURSO_URL",
-    "https://carbitrage-taylord50.aws-us-west-2.turso.io"
-)
-TURSO_TOKEN = os.environ.get(
-    "TURSO_TOKEN",
-    "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODY2NjIyNDUsImlkIjoiMDE5ZmZkNWQtODYwMS03YTk3LTk1N2EtYjk4YzRlMzhjZmZhIiwia2lkIjoiUHBLSDhiUGdfaV90Q1FhMUlldDUtZkpvMGhHOW4tODZHdTUwcUZYd2s5dyIsInJpZCI6IjI1NGIxNTRmLWM5MjQtNDI3Zi04ODEzLWE1YWI2ZDliMzE1ZSJ9.NBVqGaISA9D8O55hsqHnydRC2pl9F-v1em4eTB9_jvBmLrLaeODZO4iZh0lSUDn8BYQvIa-BzNobrq167F3eBQ"
-)
+# Credentials MUST come from environment variables. Never hardcode secrets
+# in source code — this repo is public on GitHub.
+TURSO_URL = os.environ.get("TURSO_URL", "")
+TURSO_TOKEN = os.environ.get("TURSO_TOKEN", "")
 
 SCHEMA_STATEMENTS = [
     """CREATE TABLE IF NOT EXISTS users (
@@ -144,6 +140,12 @@ class Row(dict):
 
 class Database:
     def __init__(self, path: str = ""):
+        if not TURSO_URL or not TURSO_TOKEN:
+            raise RuntimeError(
+                "TURSO_URL and TURSO_TOKEN environment variables must be set. "
+                "Create a .env file (see .env.example) or set them in your "
+                "shell/Replit Secrets. Never hardcode credentials in source."
+            )
         self._url = TURSO_URL
         self._token = TURSO_TOKEN
         self._ensure_schema()
