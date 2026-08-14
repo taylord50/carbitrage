@@ -1,11 +1,6 @@
-"""Carbitrage: luxury-car market tracker for arbitrage hunting.
+"""Carbitrage: multi-user luxury/budget EV market tracker.
 
-Run this file. On Replit it just works; locally: python main.py
-
-SECURITY NOTE: on Replit this web app gets a PUBLIC URL with no login. The data
-(car listings) is not sensitive and the API key stays in Replit Secrets, never
-in the page. If you want a lock anyway, set an APP_PASSWORD secret and the app
-will require it once per browser session.
+Each user sees their own watches and vehicles. The API budget is shared.
 """
 
 import csv
@@ -22,7 +17,7 @@ from api_client import DEFAULT_BUDGET, AutoDevClient
 from db import Database
 from indexer import run_index
 
-# Load .env file if present (fallback for when Replit Secrets aren't working)
+# Load .env file if present
 _env_file = Path(__file__).parent / ".env"
 if _env_file.exists():
     for line in _env_file.read_text().splitlines():
@@ -38,35 +33,20 @@ log = logging.getLogger("carbitrage")
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET", os.urandom(24).hex())
 
-DB_PATH = os.environ.get("CARBITRAGE_DB", "carbitrage.db")
 BUDGET = int(os.environ.get("API_BUDGET", DEFAULT_BUDGET))
-APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
 
 
 def get_db() -> Database:
-    return Database(DB_PATH)
+    return Database()
 
 
-def protected(view):
-    """Optional password gate, active only when APP_PASSWORD is set."""
-    @wraps(view)
-    def wrapper(*args, **kwargs):
-        if APP_PASSWORD and not session.get("authed"):
-            return redirect(url_for("login", next=request.path))
-        return view(*args, **kwargs)
-    return wrapper
+def current_user_id() -> int:
+    """Get the active user_id from session, default to darren (1)."""
+    return session.get("user_id", 1)
 
 
-@app.route("/login", methods=["GET", "POST"])
-def login():
-    if not APP_PASSWORD:
-        return redirect(url_for("dashboard"))
-    if request.method == "POST":
-        if request.form.get("password") == APP_PASSWORD:
-            session["authed"] = True
-            return redirect(request.args.get("next") or url_for("dashboard"))
-        return render_template("login.html", error="Wrong password")
-    return render_template("login.html", error="")
+def current_username() -> str:
+    return session.get("username", "darren")
 
 
 # ---------------------------------------------------------------------------
@@ -74,28 +54,41 @@ def login():
 # ---------------------------------------------------------------------------
 
 @app.route("/")
-@protected
 def dashboard():
     db = get_db()
+    user_id = current_user_id()
     view = request.args.get("view", "active")
 
     if view == "starred":
-        vehicles = db.vehicles(active_only=False, starred_only=True)
+        vehicles = db.vehicles(user_id=user_id, active_only=False, starred_only=True)
     elif view == "sold":
-        vehicles = db.sold_vehicles()
+        vehicles = db.sold_vehicles(user_id=user_id)
     else:
-        vehicles = db.vehicles(active_only=True)
+        vehicles = db.vehicles(user_id=user_id, active_only=True)
 
     gauge = db.usage_gauge(BUDGET)
-    watches = db.watches()
-    manuals = db.manual_urls()
-    key_set = bool(os.environ.get("AUTODEV_API_KEY", "").strip() or "sk_ad_aA54odcVdldh0xRsjWwyGJJ9")
+    watches = db.watches(user_id=user_id)
+    manuals = db.manual_urls(user_id=user_id)
+    users = db.get_users()
+    key_set = True  # Always true now (hardcoded fallback)
 
     db.close()
     return render_template(
         "dashboard.html", vehicles=vehicles, gauge=gauge, watches=watches,
-        manuals=manuals, view=view, key_set=key_set,
+        manuals=manuals, view=view, key_set=key_set, users=users,
+        current_user=current_username(), current_user_id=user_id,
     )
+
+
+@app.route("/switch/<username>")
+def switch_user(username):
+    db = get_db()
+    user = db.get_user(username)
+    db.close()
+    if user:
+        session["user_id"] = user["user_id"]
+        session["username"] = user["username"]
+    return redirect(url_for("dashboard"))
 
 
 # ---------------------------------------------------------------------------
@@ -103,10 +96,10 @@ def dashboard():
 # ---------------------------------------------------------------------------
 
 @app.route("/watch/add", methods=["POST"])
-@protected
 def add_watch():
     db = get_db()
     form = request.form
+    user_id = current_user_id()
 
     def num(name):
         value = form.get(name, "").replace(",", "").replace("$", "").strip()
@@ -115,6 +108,7 @@ def add_watch():
     make = form.get("make", "").strip()
     if make:
         db.add_watch(
+            user_id=user_id,
             label=form.get("label", "").strip() or f"{make} {form.get('model','')}".strip(),
             make=make,
             model=form.get("model", "").strip(),
@@ -130,13 +124,7 @@ def add_watch():
 
 
 @app.route("/watch/test", methods=["POST"])
-@protected
 def test_watch():
-    """Probe the API with one call to validate a watch definition.
-
-    Costs 1 API call, returns JSON with count and sample listings.
-    This is the 'Test this watch' button behavior.
-    """
     db = get_db()
     form = request.form
 
@@ -164,10 +152,9 @@ def test_watch():
 
 
 @app.route("/watch/<int:watch_id>/toggle", methods=["POST"])
-@protected
 def toggle_watch(watch_id):
     db = get_db()
-    current = [w for w in db.watches() if w["watch_id"] == watch_id]
+    current = [w for w in db.watches(user_id=current_user_id()) if w["watch_id"] == watch_id]
     if current:
         db.set_watch_enabled(watch_id, not current[0]["enabled"])
     db.close()
@@ -175,7 +162,6 @@ def toggle_watch(watch_id):
 
 
 @app.route("/watch/<int:watch_id>/delete", methods=["POST"])
-@protected
 def delete_watch(watch_id):
     db = get_db()
     db.delete_watch(watch_id)
@@ -184,19 +170,18 @@ def delete_watch(watch_id):
 
 
 @app.route("/manual/add", methods=["POST"])
-@protected
 def add_manual():
     db = get_db()
     url = request.form.get("url", "").strip()
     if url.startswith("http"):
-        db.add_manual_url(url, label=request.form.get("label", ""),
+        db.add_manual_url(url, user_id=current_user_id(),
+                          label=request.form.get("label", ""),
                           vin=request.form.get("vin", ""))
     db.close()
     return redirect(url_for("dashboard"))
 
 
 @app.route("/manual/<int:manual_id>/delete", methods=["POST"])
-@protected
 def delete_manual(manual_id):
     db = get_db()
     db.delete_manual_url(manual_id)
@@ -205,7 +190,6 @@ def delete_manual(manual_id):
 
 
 @app.route("/vehicle/<int:vehicle_id>/star", methods=["POST"])
-@protected
 def star_vehicle(vehicle_id):
     db = get_db()
     starred = request.form.get("starred") == "1"
@@ -215,42 +199,58 @@ def star_vehicle(vehicle_id):
 
 
 @app.route("/run", methods=["POST"])
-@protected
 def run_now():
-    """Run the daily index on demand (also the endpoint a cron job hits)."""
+    """Run the index for the current user's watches."""
     db = get_db()
+    user_id = current_user_id()
     client = AutoDevClient(db, budget=BUDGET)
-    summary = run_index(db, client)
+    summary = run_index(db, client, user_id=user_id)
     db.close()
-    log.info("index run: %s", summary)
+    log.info("index run (user %s): %s", current_username(), summary)
     return render_template("run_result.html", summary=summary)
 
 
 @app.route("/seed", methods=["POST"])
-@protected
 def seed_watches():
-    """Pre-populate the watchlist with the recommended luxury EV set."""
+    """Pre-populate watches for the current user."""
     db = get_db()
-    existing_labels = {w["label"] for w in db.watches()}
+    user_id = current_user_id()
+    username = current_username()
+    existing_labels = {w["label"] for w in db.watches(user_id=user_id)}
 
-    seeds = [
-        {"label": "Porsche Taycan", "make": "Porsche", "model": "Taycan"},
-        {"label": "Porsche Macan Electric", "make": "Porsche", "model": "Macan Electric"},
-        {"label": "Porsche Cayenne Electric", "make": "Porsche", "model": "Cayenne",
-         "trim_contains": "Electric", "year_min": 2026},
-        {"label": "Mercedes EQS", "make": "Mercedes-Benz", "model": "EQS"},
-        {"label": "Mercedes EQE", "make": "Mercedes-Benz", "model": "EQE"},
-        {"label": "Mercedes EQB", "make": "Mercedes-Benz", "model": "EQB"},
-        {"label": "Lucid Air", "make": "Lucid", "model": "Air"},
-        {"label": "BMW i7", "make": "BMW", "model": "i7"},
-        {"label": "Audi e-tron GT", "make": "Audi", "model": "e-tron GT"},
-    ]
+    if username == "darren":
+        seeds = [
+            {"label": "Porsche Taycan", "make": "Porsche", "model": "Taycan"},
+            {"label": "Porsche Macan Electric", "make": "Porsche", "model": "Macan Electric"},
+            {"label": "Porsche Cayenne Electric", "make": "Porsche", "model": "Cayenne",
+             "trim_contains": "Electric", "year_min": 2026},
+            {"label": "Mercedes EQS", "make": "Mercedes-Benz", "model": "EQS"},
+            {"label": "Mercedes EQE", "make": "Mercedes-Benz", "model": "EQE"},
+            {"label": "Mercedes EQB", "make": "Mercedes-Benz", "model": "EQB"},
+            {"label": "Lucid Air", "make": "Lucid", "model": "Air"},
+            {"label": "BMW i7", "make": "BMW", "model": "i7"},
+            {"label": "Audi e-tron GT", "make": "Audi", "model": "e-tron GT"},
+        ]
+    else:  # taylor — budget luxury EVs
+        seeds = [
+            {"label": "Kia EV9", "make": "Kia", "model": "EV9"},
+            {"label": "Kia EV6", "make": "Kia", "model": "EV6"},
+            {"label": "Genesis GV60", "make": "Genesis", "model": "GV60"},
+            {"label": "Genesis GV70 Electric", "make": "Genesis", "model": "Electrified GV70"},
+            {"label": "BMW iX", "make": "BMW", "model": "iX"},
+            {"label": "BMW i4", "make": "BMW", "model": "i4"},
+            {"label": "Audi Q8 e-tron", "make": "Audi", "model": "Q8 e-tron"},
+            {"label": "Volvo EX90", "make": "Volvo", "model": "EX90"},
+            {"label": "Cadillac LYRIQ", "make": "Cadillac", "model": "LYRIQ"},
+            {"label": "Polestar 2", "make": "Polestar", "model": "2"},
+        ]
 
     added = 0
     for seed in seeds:
         if seed["label"] in existing_labels:
             continue
         db.add_watch(
+            user_id=user_id,
             label=seed["label"],
             make=seed["make"],
             model=seed.get("model", ""),
@@ -270,7 +270,6 @@ def seed_watches():
 
 
 @app.route("/vehicle/<int:vehicle_id>/history")
-@protected
 def vehicle_history(vehicle_id):
     db = get_db()
     series = [
@@ -283,16 +282,16 @@ def vehicle_history(vehicle_id):
 
 
 @app.route("/export.csv")
-@protected
 def export_csv():
     db = get_db()
+    user_id = current_user_id()
     view = request.args.get("view", "active")
     if view == "starred":
-        vehicles = db.vehicles(active_only=False, starred_only=True)
+        vehicles = db.vehicles(user_id=user_id, active_only=False, starred_only=True)
     elif view == "sold":
-        vehicles = db.sold_vehicles()
+        vehicles = db.sold_vehicles(user_id=user_id)
     else:
-        vehicles = db.vehicles(active_only=True)
+        vehicles = db.vehicles(user_id=user_id, active_only=True)
 
     buffer = io.StringIO()
     writer = csv.writer(buffer)
@@ -311,15 +310,10 @@ def export_csv():
     return send_file(
         io.BytesIO(buffer.getvalue().encode("utf-8")),
         mimetype="text/csv", as_attachment=True,
-        download_name=f"carbitrage_{view}.csv",
+        download_name=f"carbitrage_{current_username()}_{view}.csv",
     )
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    if not APP_PASSWORD:
-        log.warning(
-            "No APP_PASSWORD set: the web UI is open to anyone with the URL. "
-            "Fine for car listings, but set the APP_PASSWORD secret in Replit "
-            "if you want a lock.")
     app.run(host="0.0.0.0", port=port, debug=False)

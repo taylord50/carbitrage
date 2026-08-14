@@ -3,12 +3,8 @@
 Uses Turso's HTTP pipeline API — works from any machine with just `requests`.
 No special drivers or websocket libraries needed.
 
-Tables:
-    watches         saved search definitions (make/model/year/price/radius)
-    vehicles        one row per VIN (or per manual URL when no VIN is known)
-    price_history   daily snapshot per vehicle, the core arbitrage asset
-    manual_urls     listings tracked by URL because the API does not carry them
-    api_usage       calls per month, drives the budget gauge and hard stop
+Multi-user: each user has their own watches and vehicles, but they share the
+API budget (one key, one monthly counter).
 """
 
 import os
@@ -28,8 +24,15 @@ TURSO_TOKEN = os.environ.get(
 )
 
 SCHEMA_STATEMENTS = [
+    """CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE NOT NULL,
+        display_name TEXT NOT NULL,
+        created_at TEXT
+    )""",
     """CREATE TABLE IF NOT EXISTS watches (
         watch_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL DEFAULT 1,
         label TEXT NOT NULL,
         make TEXT NOT NULL,
         model TEXT DEFAULT '',
@@ -48,7 +51,8 @@ SCHEMA_STATEMENTS = [
     )""",
     """CREATE TABLE IF NOT EXISTS vehicles (
         vehicle_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        vin TEXT UNIQUE,
+        user_id INTEGER NOT NULL DEFAULT 1,
+        vin TEXT,
         year INTEGER,
         make TEXT,
         model TEXT,
@@ -78,7 +82,8 @@ SCHEMA_STATEMENTS = [
     )""",
     """CREATE TABLE IF NOT EXISTS manual_urls (
         manual_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        url TEXT UNIQUE NOT NULL,
+        user_id INTEGER NOT NULL DEFAULT 1,
+        url TEXT NOT NULL,
         label TEXT DEFAULT '',
         vin TEXT DEFAULT '',
         enabled INTEGER DEFAULT 1,
@@ -93,7 +98,9 @@ SCHEMA_STATEMENTS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_vehicles_vin ON vehicles(vin)",
     "CREATE INDEX IF NOT EXISTS idx_vehicles_active ON vehicles(is_active)",
+    "CREATE INDEX IF NOT EXISTS idx_vehicles_user ON vehicles(user_id)",
     "CREATE INDEX IF NOT EXISTS idx_history_date ON price_history(snapshot_date)",
+    "CREATE INDEX IF NOT EXISTS idx_watches_user ON watches(user_id)",
 ]
 
 SOLD_AFTER_DAYS = 7
@@ -124,7 +131,7 @@ def _from_val(v: Dict) -> Any:
 
 
 class Row(dict):
-    """Dict-like row that also supports attribute access and index by column name."""
+    """Dict-like row that also supports attribute access."""
     def __getattr__(self, name):
         try:
             return self[name]
@@ -137,20 +144,17 @@ class Row(dict):
 
 class Database:
     def __init__(self, path: str = ""):
-        """Path is ignored — we always connect to Turso cloud."""
         self._url = TURSO_URL
         self._token = TURSO_TOKEN
         self._ensure_schema()
+        self._ensure_default_users()
 
-    def _execute_pipeline(self, statements: List[Dict]) -> List[Dict]:
+    def _execute_pipeline(self, statements: List) -> List[Dict]:
         """Send a batch of statements to Turso via HTTP pipeline API."""
         requests_payload = []
         for stmt in statements:
             if isinstance(stmt, str):
-                requests_payload.append({
-                    "type": "execute",
-                    "stmt": {"sql": stmt}
-                })
+                requests_payload.append({"type": "execute", "stmt": {"sql": stmt}})
             elif isinstance(stmt, dict) and "sql" in stmt:
                 requests_payload.append({"type": "execute", "stmt": stmt})
             else:
@@ -170,11 +174,9 @@ class Database:
         return resp.json().get("results", [])
 
     def _execute(self, sql: str, params: List = None) -> Dict:
-        """Execute a single SQL statement. Returns the result dict."""
         stmt: Dict[str, Any] = {"sql": sql}
         if params:
             stmt["args"] = [_val(p) for p in params]
-
         results = self._execute_pipeline([stmt])
         if results and results[0].get("type") == "ok":
             return results[0]["response"]["result"]
@@ -183,7 +185,6 @@ class Database:
         return {"cols": [], "rows": [], "affected_row_count": 0, "last_insert_rowid": None}
 
     def _query(self, sql: str, params: List = None) -> List[Row]:
-        """Execute a SELECT and return list of Row dicts."""
         result = self._execute(sql, params)
         cols = [c["name"] for c in result.get("cols", [])]
         rows = []
@@ -195,7 +196,6 @@ class Database:
         return rows
 
     def _execute_returning_id(self, sql: str, params: List = None) -> int:
-        """Execute an INSERT and return last_insert_rowid."""
         result = self._execute(sql, params)
         rowid = result.get("last_insert_rowid")
         if rowid and isinstance(rowid, str):
@@ -203,21 +203,43 @@ class Database:
         return int(rowid) if rowid else 0
 
     def _ensure_schema(self):
-        """Create tables if they don't exist."""
         self._execute_pipeline(SCHEMA_STATEMENTS)
 
+    def _ensure_default_users(self):
+        """Create the two default users if they don't exist."""
+        existing = self._query("SELECT username FROM users")
+        names = {r["username"] for r in existing}
+        if "darren" not in names:
+            self._execute(
+                "INSERT INTO users (username, display_name, created_at) VALUES (?, ?, ?)",
+                ["darren", "Darren", datetime.now(timezone.utc).isoformat()]
+            )
+        if "taylor" not in names:
+            self._execute(
+                "INSERT INTO users (username, display_name, created_at) VALUES (?, ?, ?)",
+                ["taylor", "Taylor", datetime.now(timezone.utc).isoformat()]
+            )
+
     # ------------------------------------------------------------------
-    # API budget
+    # Users
+    # ------------------------------------------------------------------
+
+    def get_user(self, username: str) -> Optional[Row]:
+        rows = self._query("SELECT * FROM users WHERE username = ?", [username])
+        return rows[0] if rows else None
+
+    def get_users(self) -> List[Row]:
+        return self._query("SELECT * FROM users ORDER BY user_id")
+
+    # ------------------------------------------------------------------
+    # API budget (shared across all users)
     # ------------------------------------------------------------------
 
     def month_key(self) -> str:
         return datetime.now(timezone.utc).strftime("%Y-%m")
 
     def calls_this_month(self) -> int:
-        rows = self._query(
-            "SELECT calls FROM api_usage WHERE month = ?",
-            [self.month_key()]
-        )
+        rows = self._query("SELECT calls FROM api_usage WHERE month = ?", [self.month_key()])
         return rows[0]["calls"] if rows else 0
 
     def record_call(self, n: int = 1) -> None:
@@ -225,6 +247,14 @@ class Database:
             "INSERT INTO api_usage (month, calls) VALUES (?, ?) "
             "ON CONFLICT(month) DO UPDATE SET calls = calls + ?",
             [self.month_key(), n, n]
+        )
+
+    def set_usage(self, month: str, calls: int) -> None:
+        """Manually set usage for a month (for syncing with API provider)."""
+        self._execute(
+            "INSERT INTO api_usage (month, calls) VALUES (?, ?) "
+            "ON CONFLICT(month) DO UPDATE SET calls = ?",
+            [month, calls, calls]
         )
 
     def usage_gauge(self, budget: int) -> Dict:
@@ -247,11 +277,12 @@ class Database:
         }
 
     # ------------------------------------------------------------------
-    # Watches
+    # Watches (per user)
     # ------------------------------------------------------------------
 
-    def add_watch(self, **fields) -> int:
+    def add_watch(self, user_id: int = 1, **fields) -> int:
         fields.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+        fields["user_id"] = user_id
         cols = list(fields.keys())
         placeholders = ", ".join("?" for _ in cols)
         col_str = ", ".join(cols)
@@ -260,11 +291,15 @@ class Database:
             list(fields.values())
         )
 
-    def watches(self, enabled_only: bool = False) -> List[Row]:
-        sql = "SELECT * FROM watches"
+    def watches(self, user_id: int = None, enabled_only: bool = False) -> List[Row]:
+        sql = "SELECT * FROM watches WHERE 1=1"
+        params = []
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params.append(user_id)
         if enabled_only:
-            sql += " WHERE enabled = 1"
-        return self._query(sql + " ORDER BY watch_id")
+            sql += " AND enabled = 1"
+        return self._query(sql + " ORDER BY watch_id", params or None)
 
     def set_watch_enabled(self, watch_id: int, enabled: bool) -> None:
         self._execute("UPDATE watches SET enabled = ? WHERE watch_id = ?",
@@ -280,21 +315,25 @@ class Database:
         )
 
     # ------------------------------------------------------------------
-    # Vehicles
+    # Vehicles (per user)
     # ------------------------------------------------------------------
 
-    def upsert_vehicle(self, record: Dict, watch_id: Optional[int] = None,
+    def upsert_vehicle(self, record: Dict, user_id: int = 1,
+                       watch_id: Optional[int] = None,
                        source: str = "api") -> Tuple[int, bool]:
         today = date.today().isoformat()
         vin = (record.get("vin") or "").strip().upper() or None
 
         existing = None
         if vin:
-            rows = self._query("SELECT vehicle_id, price FROM vehicles WHERE vin = ?", [vin])
+            rows = self._query(
+                "SELECT vehicle_id, price FROM vehicles WHERE vin = ? AND user_id = ?",
+                [vin, user_id])
             existing = rows[0] if rows else None
         elif record.get("listing_url"):
-            rows = self._query("SELECT vehicle_id, price FROM vehicles WHERE listing_url = ?",
-                               [record["listing_url"]])
+            rows = self._query(
+                "SELECT vehicle_id, price FROM vehicles WHERE listing_url = ? AND user_id = ?",
+                [record["listing_url"], user_id])
             existing = rows[0] if rows else None
 
         price = record.get("price")
@@ -313,11 +352,11 @@ class Database:
         else:
             vehicle_id = self._execute_returning_id(
                 "INSERT INTO vehicles "
-                "(vin, year, make, model, trim, mileage, price, "
+                "(user_id, vin, year, make, model, trim, mileage, price, "
                 "accepting_offers, dealer_name, city, state, listing_url, "
                 "source, watch_id, first_seen, last_seen) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                [vin, record.get("year"), record.get("make"),
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [user_id, vin, record.get("year"), record.get("make"),
                  record.get("model"), record.get("trim"),
                  record.get("mileage"), price, accepting,
                  record.get("dealer_name"), record.get("city"),
@@ -326,7 +365,6 @@ class Database:
             )
             is_new = True
 
-        # Daily snapshot
         self._execute(
             "INSERT INTO price_history (vehicle_id, snapshot_date, price, mileage) "
             "VALUES (?, ?, ?, ?) "
@@ -336,11 +374,10 @@ class Database:
         )
         return vehicle_id, is_new
 
-    def upsert_vehicles_batch(self, records: List[Dict],
+    def upsert_vehicles_batch(self, records: List[Dict], user_id: int = 1,
                               watch_id: Optional[int] = None,
                               source: str = "api") -> Tuple[int, int]:
-        """Batch upsert using pipeline — much faster over network.
-        Returns (total_processed, new_count_estimate)."""
+        """Batch upsert using pipeline."""
         if not records:
             return 0, 0
         today = date.today().isoformat()
@@ -353,15 +390,14 @@ class Database:
             price = record.get("price")
             accepting = 1 if record.get("accepting_offers") else 0
 
-            # INSERT OR IGNORE (new vehicles) + UPDATE (refresh existing)
             stmts.append({
                 "sql": "INSERT OR IGNORE INTO vehicles "
-                       "(vin, year, make, model, trim, mileage, price, "
+                       "(user_id, vin, year, make, model, trim, mileage, price, "
                        "accepting_offers, dealer_name, city, state, listing_url, "
                        "source, watch_id, first_seen, last_seen) "
-                       "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                       "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 "args": [_val(v) for v in [
-                    vin, record.get("year"), record.get("make"),
+                    user_id, vin, record.get("year"), record.get("make"),
                     record.get("model"), record.get("trim"),
                     record.get("mileage"), price, accepting,
                     record.get("dealer_name"), record.get("city"),
@@ -373,15 +409,14 @@ class Database:
                 "sql": "UPDATE vehicles SET price = COALESCE(?, price), "
                        "accepting_offers = ?, mileage = COALESCE(?, mileage), "
                        "last_seen = ?, is_active = 1, sold_detected = NULL "
-                       "WHERE vin = ?",
-                "args": [_val(v) for v in [price, accepting, record.get("mileage"), today, vin]]
+                       "WHERE vin = ? AND user_id = ?",
+                "args": [_val(v) for v in [price, accepting, record.get("mileage"), today, vin, user_id]]
             })
 
-        # Send all inserts+updates in one pipeline call
         if stmts:
             self._execute_pipeline(stmts)
 
-        # Batch price history in a second pipeline
+        # Batch price history
         hist_stmts = []
         for record in records:
             vin = (record.get("vin") or "").strip().upper() or None
@@ -391,8 +426,8 @@ class Database:
             hist_stmts.append({
                 "sql": "INSERT OR REPLACE INTO price_history "
                        "(vehicle_id, snapshot_date, price, mileage) "
-                       "SELECT vehicle_id, ?, ?, ? FROM vehicles WHERE vin = ?",
-                "args": [_val(v) for v in [today, price, record.get("mileage"), vin]]
+                       "SELECT vehicle_id, ?, ?, ? FROM vehicles WHERE vin = ? AND user_id = ?",
+                "args": [_val(v) for v in [today, price, record.get("mileage"), vin, user_id]]
             })
 
         if hist_stmts:
@@ -400,21 +435,23 @@ class Database:
 
         return len(records), 0
 
-    def mark_sold(self) -> int:
+    def mark_sold(self, user_id: int = None) -> int:
         cutoff = (date.today() - timedelta(days=SOLD_AFTER_DAYS)).isoformat()
-        result = self._execute(
-            "UPDATE vehicles SET is_active = 0, sold_detected = ? "
-            "WHERE last_seen < ? AND is_active = 1",
-            [date.today().isoformat(), cutoff]
-        )
+        sql = ("UPDATE vehicles SET is_active = 0, sold_detected = ? "
+               "WHERE last_seen < ? AND is_active = 1")
+        params = [date.today().isoformat(), cutoff]
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params.append(user_id)
+        result = self._execute(sql, params)
         return result.get("affected_row_count", 0)
 
     def set_starred(self, vehicle_id: int, starred: bool) -> None:
         self._execute("UPDATE vehicles SET starred = ? WHERE vehicle_id = ?",
                       [int(starred), vehicle_id])
 
-    def vehicles(self, active_only: bool = True, starred_only: bool = False,
-                 watch_id: Optional[int] = None) -> List[Row]:
+    def vehicles(self, user_id: int = None, active_only: bool = True,
+                 starred_only: bool = False, watch_id: Optional[int] = None) -> List[Row]:
         sql = """
             SELECT v.*,
                    (SELECT COUNT(*) FROM price_history h
@@ -428,6 +465,9 @@ class Database:
               FROM vehicles v WHERE 1=1
         """
         params: List = []
+        if user_id is not None:
+            sql += " AND v.user_id = ?"
+            params.append(user_id)
         if active_only:
             sql += " AND v.is_active = 1"
         if starred_only:
@@ -445,36 +485,45 @@ class Database:
             [vehicle_id]
         )
 
-    def sold_vehicles(self) -> List[Row]:
-        return self._query("""
+    def sold_vehicles(self, user_id: int = None) -> List[Row]:
+        sql = """
             SELECT v.*,
                    (SELECT price FROM price_history h
                      WHERE h.vehicle_id = v.vehicle_id AND price IS NOT NULL
                   ORDER BY snapshot_date DESC LIMIT 1) AS last_price,
                    (SELECT COUNT(*) FROM price_history h
                      WHERE h.vehicle_id = v.vehicle_id) AS days_tracked
-              FROM vehicles v
-             WHERE is_active = 0
-          ORDER BY sold_detected DESC
-        """)
+              FROM vehicles v WHERE is_active = 0
+        """
+        params = []
+        if user_id is not None:
+            sql += " AND v.user_id = ?"
+            params.append(user_id)
+        sql += " ORDER BY sold_detected DESC"
+        return self._query(sql, params if params else None)
 
     # ------------------------------------------------------------------
-    # Manual URLs
+    # Manual URLs (per user)
     # ------------------------------------------------------------------
 
-    def add_manual_url(self, url: str, label: str = "", vin: str = "") -> int:
+    def add_manual_url(self, url: str, user_id: int = 1,
+                       label: str = "", vin: str = "") -> int:
         return self._execute_returning_id(
-            "INSERT OR IGNORE INTO manual_urls (url, label, vin, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            [url.strip(), label.strip(), vin.strip().upper(),
+            "INSERT OR IGNORE INTO manual_urls (user_id, url, label, vin, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [user_id, url.strip(), label.strip(), vin.strip().upper(),
              datetime.now(timezone.utc).isoformat()]
         )
 
-    def manual_urls(self, enabled_only: bool = False) -> List[Row]:
-        sql = "SELECT * FROM manual_urls"
+    def manual_urls(self, user_id: int = None, enabled_only: bool = False) -> List[Row]:
+        sql = "SELECT * FROM manual_urls WHERE 1=1"
+        params = []
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params.append(user_id)
         if enabled_only:
-            sql += " WHERE enabled = 1"
-        return self._query(sql + " ORDER BY manual_id")
+            sql += " AND enabled = 1"
+        return self._query(sql + " ORDER BY manual_id", params or None)
 
     def update_manual(self, manual_id: int, status: str,
                       vehicle_id: Optional[int] = None) -> None:
@@ -488,7 +537,7 @@ class Database:
         self._execute("DELETE FROM manual_urls WHERE manual_id = ?", [manual_id])
 
     # ------------------------------------------------------------------
-    # For indexer compatibility — direct SQL execution on sold detection
+    # Compatibility
     # ------------------------------------------------------------------
     class _Conn:
         def __init__(self, db):
@@ -496,11 +545,11 @@ class Database:
         def execute(self, sql, params=None):
             self._db._execute(sql, list(params) if params else None)
         def commit(self):
-            pass  # Turso auto-commits
+            pass
 
     @property
     def conn(self):
         return self._Conn(self)
 
     def close(self) -> None:
-        pass  # No persistent connection to close
+        pass

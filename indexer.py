@@ -14,8 +14,8 @@ from manual_tracker import check_url, title_to_fields
 log = logging.getLogger(__name__)
 
 
-def run_index(db, client: AutoDevClient) -> Dict:
-    """Run every enabled watch and manual URL. Returns a summary dict."""
+def run_index(db, client: AutoDevClient, user_id: int = 1) -> Dict:
+    """Run every enabled watch for a user and manual URLs. Returns a summary dict."""
     summary = {
         "watches_run": 0, "listings_seen": 0, "new_vehicles": 0,
         "manual_checked": 0, "manual_gone": 0,
@@ -23,14 +23,15 @@ def run_index(db, client: AutoDevClient) -> Dict:
     }
 
     # --- API watches --------------------------------------------------
-    for watch in db.watches(enabled_only=True):
+    for watch in db.watches(user_id=user_id, enabled_only=True):
         try:
             records = list(client.search_watch(watch))
             count = len(records)
             if records:
-                db.upsert_vehicles_batch(records, watch_id=watch["watch_id"])
+                db.upsert_vehicles_batch(records, user_id=user_id,
+                                         watch_id=watch["watch_id"])
             summary["listings_seen"] += count
-            summary["new_vehicles"] += count  # Approximation for batch mode
+            summary["new_vehicles"] += count
             db.touch_watch(watch["watch_id"], count)
             summary["watches_run"] += 1
             log.info("watch %s (%s): %s listings", watch["watch_id"],
@@ -40,12 +41,12 @@ def run_index(db, client: AutoDevClient) -> Dict:
             summary["errors"].append(str(exc))
             log.warning("%s", exc)
             break
-        except Exception as exc:  # noqa: BLE001 - one watch must not kill the run
+        except Exception as exc:
             summary["errors"].append(f"watch {watch['label']}: {exc}")
             log.exception("watch %s failed", watch["watch_id"])
 
     # --- manual URLs ----------------------------------------------------
-    for manual in db.manual_urls(enabled_only=True):
+    for manual in db.manual_urls(user_id=user_id, enabled_only=True):
         summary["manual_checked"] += 1
         result = check_url(manual["url"], known_vin=manual["vin"] or "")
 
@@ -77,12 +78,12 @@ def run_index(db, client: AutoDevClient) -> Dict:
             "listing_url": manual["url"],
             "dealer_name": "(manual)",
         }
-        vehicle_id, is_new = db.upsert_vehicle(record, source="manual")
+        vehicle_id, is_new = db.upsert_vehicle(record, user_id=user_id, source="manual")
         if is_new:
             summary["new_vehicles"] += 1
         db.update_manual(manual["manual_id"], "ok", vehicle_id)
 
     # --- sold detection -------------------------------------------------
-    summary["marked_sold"] = db.mark_sold()
+    summary["marked_sold"] = db.mark_sold(user_id=user_id)
 
     return summary

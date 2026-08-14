@@ -73,7 +73,18 @@
 <body>
 <header>
   <h1>Carbitrage <span class="muted">luxury market tracker</span></h1>
-  <div>
+  <div style="display:flex; align-items:center; gap:12px">
+    <div style="background:var(--panel2); border:1px solid var(--line);
+                border-radius:8px; padding:4px 10px; font-size:13px">
+      {% for u in users %}
+        {% if u.username == current_user %}
+          <b style="color:var(--accent)">{{ u.display_name }}</b>
+        {% else %}
+          <a href="/switch/{{ u.username }}">{{ u.display_name }}</a>
+        {% endif %}
+        {% if not loop.last %} | {% endif %}
+      {% endfor %}
+    </div>
     <form class="inline" method="post" action="/run">
       <button {% if gauge.exhausted %}disabled title="Budget exhausted"{% endif %}>
         Run index now</button>
