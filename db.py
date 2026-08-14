@@ -16,7 +16,9 @@ import requests as http_requests
 # --- Turso connection config ---
 # Credentials MUST come from environment variables. Never hardcode secrets
 # in source code — this repo is public on GitHub.
-TURSO_URL = os.environ.get("TURSO_URL", "")
+# Turso gives you a libsql:// URL but the HTTP pipeline API needs https://.
+_raw_turso_url = os.environ.get("TURSO_URL", "")
+TURSO_URL = _raw_turso_url.replace("libsql://", "https://", 1) if _raw_turso_url else ""
 TURSO_TOKEN = os.environ.get("TURSO_TOKEN", "")
 
 SCHEMA_STATEMENTS = [
